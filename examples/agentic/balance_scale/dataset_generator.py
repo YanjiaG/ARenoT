@@ -99,8 +99,8 @@ def main() -> None:
         raise ValueError("--count must be positive")
     if args.num_balls < 2:
         raise ValueError("--num-balls must be at least 2")
-    if args.max_weighings < 1:
-        raise ValueError("--max-weighings must be at least 1")
+    if args.max_weighings < 0:
+        raise ValueError("--max-weighings must be >= 0 (0 = auto)")
 
     records = generate_records(
         args.count,
