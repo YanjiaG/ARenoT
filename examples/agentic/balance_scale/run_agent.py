@@ -196,13 +196,20 @@ async def _run_puzzle_loop(
 
     for _turn_idx in range(ball_set.max_weighings + 1):
         if weighings_used >= ball_set.max_weighings:
+            # Budget exhausted: force submit_answer
             tools = [SUBMIT_ANSWER_TOOL]
             tool_choice: object = {"type": "function", "function": {"name": "submit_answer"}}
             hint = (
                 f"You have used all {ball_set.max_weighings} weighings. "
                 "You must now call submit_answer with your best guess."
             )
+        elif weighings_used == 0 and _turn_idx == 0:
+            # First turn: force weigh to bootstrap tool usage
+            tools = [WEIGH_TOOL]
+            tool_choice = {"type": "function", "function": {"name": "weigh"}}
+            hint = None
         else:
+            # Subsequent turns: allow either weigh or submit_answer
             tools = TOOLS
             tool_choice = "auto"
             hint = None
