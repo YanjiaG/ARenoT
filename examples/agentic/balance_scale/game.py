@@ -46,6 +46,13 @@ class BallSet:
         if self.max_weighings < 1:
             raise ValueError("max_weighings must be at least 1")
 
+    @property
+    def min_weighings(self) -> int:
+        """Information-theoretic minimum weighings to solve this puzzle."""
+
+        import math
+        return max(1, math.ceil(math.log(self.num_balls * 2, 3)))
+
 
 def make_ball_set(
     num_balls: int = 12,
@@ -158,16 +165,17 @@ def check_answer(
 def format_prompt(ball_set: BallSet) -> str:
     """Build the user-facing prompt for one puzzle instance."""
 
+    min_w = ball_set.min_weighings
     return (
         f"There are {ball_set.num_balls} balls numbered 0 to {ball_set.num_balls - 1}. "
         "They look identical, but exactly one ball is either heavier or lighter "
         "than all the others.\n\n"
-        f"You have a balance scale and at most {ball_set.max_weighings} weighings "
-        "to identify the odd ball and determine whether it is heavier or lighter.\n\n"
-        "Call the weigh tool with two equal-size disjoint lists of ball indices "
-        "to compare them. The scale will return 'left_heavy', 'right_heavy', or "
-        "'balanced'. When you are ready, call submit_answer with the ball index "
-        "and direction ('heavier' or 'lighter')."
+        "You have a balance scale. Call the weigh tool with two equal-size "
+        "disjoint lists of ball indices to compare them. The scale will return "
+        "'left_heavy', 'right_heavy', or 'balanced'.\n\n"
+        f"Theoretically, this puzzle can be solved in {min_w} weighings. "
+        "Try to use as few weighings as possible. When you are ready, call "
+        "submit_answer with the ball index and direction ('heavier' or 'lighter')."
     )
 
 

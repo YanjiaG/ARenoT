@@ -359,8 +359,12 @@ def test_loader_fallback_to_generator_when_file_missing():
 
 
 # ---------------------------------------------------------------------------
-# Reward function
+# Reward function (information-gain-aware continuous reward)
 # ---------------------------------------------------------------------------
+
+ALPHA = 0.15
+REPEAT_PENALTY = 0.3
+INVALID_PENALTY = 0.2
 
 
 def _reward_record(source: dict, tool_calls: list, metadata: dict | None = None):
@@ -371,10 +375,32 @@ def _reward_record(source: dict, tool_calls: list, metadata: dict | None = None)
     )
 
 
-def test_reward_full_correct_answer():
+def _base_reward(num_balls: int) -> int:
+    import math
+    return max(1, math.ceil(math.log(num_balls * 2, 3)))
+
+
+def test_reward_full_correct_no_weighings():
+    """Correct answer with 0 weighings → reward = base (maximum)."""
     reward = _load_module("reward")
 
-    source = {"num_balls": 12, "odd_ball_index": 5, "direction": "heavier", "max_weighings": 3}
+    source = {"num_balls": 12, "odd_ball_index": 5, "direction": "heavier", "max_weighings": 6}
+    record = _reward_record(
+        source,
+        [{"name": "submit_answer", "arguments": json.dumps({"ball_index": 5, "direction": "heavier"})}],
+    )
+
+    base = _base_reward(12)
+    assert reward.reward_fn(record) == float(base)
+    assert record.metadata["full_answer_accuracy"] == 1.0
+    assert record.metadata["valid_weighings"] == 0
+
+
+def test_reward_full_correct_with_weighings():
+    """Correct answer with 1 weighing → reward = base - alpha."""
+    reward = _load_module("reward")
+
+    source = {"num_balls": 12, "odd_ball_index": 5, "direction": "heavier", "max_weighings": 6}
     record = _reward_record(
         source,
         [
@@ -383,16 +409,18 @@ def test_reward_full_correct_answer():
         ],
     )
 
-    assert reward.reward_fn(record) == 1.0
+    base = _base_reward(12)
+    expected = float(base) - ALPHA
+    assert reward.reward_fn(record) == expected
     assert record.metadata["full_answer_accuracy"] == 1.0
-    assert record.metadata["identity_only_accuracy"] == 1.0
-    assert record.metadata["weighings_used"] == 1
+    assert record.metadata["valid_weighings"] == 1
 
 
 def test_reward_identity_only():
+    """Ball correct but direction wrong → reward = base/2 - alpha."""
     reward = _load_module("reward")
 
-    source = {"num_balls": 12, "odd_ball_index": 5, "direction": "heavier", "max_weighings": 3}
+    source = {"num_balls": 12, "odd_ball_index": 5, "direction": "heavier", "max_weighings": 6}
     record = _reward_record(
         source,
         [
@@ -401,16 +429,18 @@ def test_reward_identity_only():
         ],
     )
 
-    assert reward.reward_fn(record) == 0.5
+    base = _base_reward(12)
+    expected = float(base) / 2.0 - ALPHA
+    assert reward.reward_fn(record) == expected
     assert record.metadata["full_answer_accuracy"] == 0.0
     assert record.metadata["identity_only_accuracy"] == 1.0
-    assert record.metadata["weighings_used"] == 1
 
 
 def test_reward_completely_wrong():
+    """Wrong ball and direction → reward = 0 - alpha (only weighing cost)."""
     reward = _load_module("reward")
 
-    source = {"num_balls": 12, "odd_ball_index": 5, "direction": "heavier", "max_weighings": 3}
+    source = {"num_balls": 12, "odd_ball_index": 5, "direction": "heavier", "max_weighings": 6}
     record = _reward_record(
         source,
         [
@@ -419,15 +449,17 @@ def test_reward_completely_wrong():
         ],
     )
 
-    assert reward.reward_fn(record) == 0.0
+    expected = 0.0 - ALPHA
+    assert reward.reward_fn(record) == expected
     assert record.metadata["full_answer_accuracy"] == 0.0
     assert record.metadata["identity_only_accuracy"] == 0.0
 
 
 def test_reward_no_submit_answer():
+    """No submit_answer → reward = -1 (fixed penalty)."""
     reward = _load_module("reward")
 
-    source = {"num_balls": 12, "odd_ball_index": 5, "direction": "heavier", "max_weighings": 3}
+    source = {"num_balls": 12, "odd_ball_index": 5, "direction": "heavier", "max_weighings": 6}
     record = _reward_record(
         source,
         [
@@ -438,34 +470,99 @@ def test_reward_no_submit_answer():
 
     assert reward.reward_fn(record) == -1.0
     assert record.metadata["full_answer_accuracy"] == 0.0
-    assert record.metadata["identity_only_accuracy"] == 0.0
-    assert record.metadata["weighings_used"] == 2
+    assert record.metadata["valid_weighings"] == 2
 
 
-def test_reward_records_mean_weighings_across_records():
-    """Verify that weighings_used is tracked per record for metric aggregation."""
+def test_reward_repeated_weighing_penalized():
+    """Same weighing repeated → repeat penalty applied."""
     reward = _load_module("reward")
 
-    source = {"num_balls": 12, "odd_ball_index": 5, "direction": "heavier", "max_weighings": 3}
-
-    r1 = _reward_record(
-        source,
-        [{"name": "submit_answer", "arguments": json.dumps({"ball_index": 5, "direction": "heavier"})}],
-    )
-    r2 = _reward_record(
+    source = {"num_balls": 12, "odd_ball_index": 5, "direction": "heavier", "max_weighings": 6}
+    record = _reward_record(
         source,
         [
-            {"name": "weigh", "arguments": json.dumps({"left": [0], "right": [1]})},
-            {"name": "weigh", "arguments": json.dumps({"left": [2], "right": [3]})},
+            {"name": "weigh", "arguments": json.dumps({"left": [0, 1], "right": [2, 3]})},
+            {"name": "weigh", "arguments": json.dumps({"left": [0, 1], "right": [2, 3]})},  # repeat
             {"name": "submit_answer", "arguments": json.dumps({"ball_index": 5, "direction": "heavier"})},
         ],
     )
 
-    reward.reward_fn(r1)
-    reward.reward_fn(r2)
+    base = _base_reward(12)
+    # 1 valid + 1 repeated: cost = (1+1)*alpha + 1*repeat_penalty
+    expected = float(base) - 2 * ALPHA - REPEAT_PENALTY
+    assert reward.reward_fn(record) == expected
+    assert record.metadata["valid_weighings"] == 1
+    assert record.metadata["repeated_weighings"] == 1
 
-    mean_weighings = (r1.metadata["weighings_used"] + r2.metadata["weighings_used"]) / 2
-    assert mean_weighings == 1.0
+
+def test_reward_invalid_weighing_penalized():
+    """Invalid weighing (unequal size) → invalid penalty applied."""
+    reward = _load_module("reward")
+
+    source = {"num_balls": 12, "odd_ball_index": 5, "direction": "heavier", "max_weighings": 6}
+    record = _reward_record(
+        source,
+        [
+            {"name": "weigh", "arguments": json.dumps({"left": [0, 1, 2], "right": [3, 4]})},  # invalid
+            {"name": "submit_answer", "arguments": json.dumps({"ball_index": 5, "direction": "heavier"})},
+        ],
+    )
+
+    base = _base_reward(12)
+    expected = float(base) - INVALID_PENALTY  # 0 valid weighings, 1 invalid
+    assert reward.reward_fn(record) == expected
+    assert record.metadata["valid_weighings"] == 0
+    assert record.metadata["invalid_weighings"] == 1
+
+
+def test_reward_scales_with_num_balls():
+    """Larger num_balls → higher base reward, auto-adaptive."""
+    reward = _load_module("reward")
+
+    # 6 balls → base = ceil(log3(12)) = 3
+    source_small = {"num_balls": 6, "odd_ball_index": 0, "direction": "heavier", "max_weighings": 6}
+    r_small = _reward_record(
+        source_small,
+        [{"name": "submit_answer", "arguments": json.dumps({"ball_index": 0, "direction": "heavier"})}],
+    )
+
+    # 100 balls → base = ceil(log3(200)) = 5
+    source_large = {"num_balls": 100, "odd_ball_index": 0, "direction": "heavier", "max_weighings": 12}
+    r_large = _reward_record(
+        source_large,
+        [{"name": "submit_answer", "arguments": json.dumps({"ball_index": 0, "direction": "heavier"})}],
+    )
+
+    r_small_val = reward.reward_fn(r_small)
+    r_large_val = reward.reward_fn(r_large)
+    assert r_large_val > r_small_val  # bigger puzzle → bigger reward
+
+
+def test_reward_metadata_tracks_all_components():
+    """Verify metadata records all reward components for metric aggregation."""
+    reward = _load_module("reward")
+
+    source = {"num_balls": 12, "odd_ball_index": 5, "direction": "heavier", "max_weighings": 6}
+    record = _reward_record(
+        source,
+        [
+            {"name": "weigh", "arguments": json.dumps({"left": [0, 1], "right": [2, 3]})},
+            {"name": "weigh", "arguments": json.dumps({"left": [0, 1], "right": [2, 3]})},  # repeat
+            {"name": "weigh", "arguments": json.dumps({"left": [0], "right": [1, 2]})},  # invalid
+            {"name": "submit_answer", "arguments": json.dumps({"ball_index": 5, "direction": "heavier"})},
+        ],
+    )
+
+    reward.reward_fn(record)
+
+    assert record.metadata["valid_weighings"] == 1
+    assert record.metadata["repeated_weighings"] == 1
+    assert record.metadata["invalid_weighings"] == 1
+    assert record.metadata["full_answer_accuracy"] == 1.0
+    assert "reward_components" in record.metadata
+    assert record.metadata["reward_components"]["k"] is not None
+    assert record.metadata["reward_components"]["repeat_cost"] == REPEAT_PENALTY
+    assert record.metadata["reward_components"]["invalid_cost"] == INVALID_PENALTY
 
 
 # ---------------------------------------------------------------------------

@@ -15,7 +15,7 @@ import game  # noqa: E402
 DEFAULT_COUNT = 128
 DEFAULT_SEED = 2026
 DEFAULT_NUM_BALLS = 12
-DEFAULT_MAX_WEIGHINGS = 3
+DEFAULT_MAX_WEIGHINGS = 0  # 0 = auto (2x information-theoretic minimum)
 
 
 def generate_records(
@@ -28,9 +28,17 @@ def generate_records(
     """Generate reproducible odd-ball puzzle records.
 
     Each record contains ``num_balls``, ``odd_ball_index``, ``direction``
-    (``"heavier"`` or ``"lighter"``), and ``max_weighings``. A single seed
-    produces the same sequence every time.
+    (``"heavier"`` or ``"lighter"``), and ``max_weighings``. When
+    ``max_weighings`` is 0, it is set to 2× the information-theoretic
+    minimum (ceil(log3(num_balls*2))), which is a soft upper bound to
+    prevent infinite loops while allowing the agent flexibility.
     """
+
+    import math
+
+    if max_weighings <= 0:
+        min_w = max(1, math.ceil(math.log(num_balls * 2, 3)))
+        max_weighings = min_w * 2
 
     rng = random.Random(seed)
     records: list[dict] = []
