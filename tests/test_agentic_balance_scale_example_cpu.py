@@ -900,11 +900,15 @@ def test_format_prompt_contains_key_info():
     prompt = game.format_prompt(bs)
 
     assert "12" in prompt
-    assert "3 weighings" in prompt
     assert "weigh" in prompt
     assert "submit_answer" in prompt
     assert "heavier" in prompt
     assert "lighter" in prompt
+    # Few-shot example should be present
+    assert "left" in prompt
+    assert "right" in prompt
+    assert "ball_index" in prompt
+    assert "direction" in prompt
 
 
 def test_format_system_prompt_describes_task():

@@ -175,7 +175,11 @@ def format_prompt(ball_set: BallSet) -> str:
         "'left_heavy', 'right_heavy', or 'balanced'.\n\n"
         f"Theoretically, this puzzle can be solved in {min_w} weighings. "
         "Try to use as few weighings as possible. When you are ready, call "
-        "submit_answer with the ball index and direction ('heavier' or 'lighter')."
+        "submit_answer with the ball index and direction ('heavier' or 'lighter').\n\n"
+        "Example tool calls:\n"
+        '  weigh: {"left": [0, 1], "right": [2, 3]}  → "balanced"\n'
+        '  weigh: {"left": [4], "right": [5]}  → "left_heavy"\n'
+        '  submit_answer: {"ball_index": 4, "direction": "heavier"}\n'
     )
 
 
