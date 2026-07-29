@@ -451,16 +451,22 @@ def _parse_tool_call_from_text(content: str, tool_choice: object) -> dict | None
     # Pattern 3: submit_answer with ball_index + direction
     # e.g. {"ball_index": 5, "direction": "heavier"}
     # or ball_index: 5, direction: "heavier"
+    # also matches when wrapped in other text
     m = re.search(
-        r'"?ball_index"?\s*:\s*(\d+)\s*,\s*"?direction"?\s*:\s*"(heavier|lighter)"',
+        r'"?ball_index"?\s*:\s*(\d+)[^}]*?"?direction"?\s*:\s*"?(\w+)"?',
         content,
     )
     if m:
+        direction = m.group(2).lower()
+        if "heav" in direction:
+            direction = "heavier"
+        elif "light" in direction:
+            direction = "lighter"
         return {
             "name": "submit_answer",
             "arguments": json.dumps({
                 "ball_index": int(m.group(1)),
-                "direction": m.group(2),
+                "direction": direction,
             }),
         }
 
