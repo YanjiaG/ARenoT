@@ -1,6 +1,6 @@
 """Reward function for the odd-ball balance-scale tool-call example.
 
-Scoring formula:  R_end = K - T·a + P_repeat + P_invalid
+Scoring formula:  R_end = K - T·a - P_repeat - P_invalid
 
   K (answer reward):
     - Full answer correct (ball + direction) → base_reward

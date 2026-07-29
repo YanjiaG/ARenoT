@@ -316,6 +316,38 @@ def test_generator_different_seeds_produce_different_records():
     assert r1 != r2
 
 
+def test_generator_random_num_balls_range():
+    """Records should have varying num_balls within the specified range."""
+    generator = _load_module("dataset_generator")
+
+    records = generator.generate_records(32, seed=7, num_balls_range=(3, 8))
+
+    assert len(records) == 32
+    ball_counts = {r["num_balls"] for r in records}
+    assert len(ball_counts) > 1  # should have multiple different ball counts
+    for record in records:
+        assert 3 <= record["num_balls"] <= 8
+        assert 0 <= record["odd_ball_index"] < record["num_balls"]
+        assert record["direction"] in ("heavier", "lighter")
+        assert record["max_weighings"] >= 1
+
+
+def test_generator_split_records():
+    """split_records should produce correct train/test sizes."""
+    generator = _load_module("dataset_generator")
+
+    records = generator.generate_records(30, seed=7, num_balls=6)
+    train, test = generator.split_records(records, 0.33)
+
+    assert len(train) + len(test) == 30
+    assert len(test) == 9  # int(30 * 0.33) = 9
+    assert len(train) == 21
+    # Ensure no overlap
+    train_ids = {r["id"] for r in train}
+    test_ids = {r["id"] for r in test}
+    assert train_ids & test_ids == set()
+
+
 # ---------------------------------------------------------------------------
 # Dataset loader
 # ---------------------------------------------------------------------------

@@ -216,7 +216,10 @@ async def _run_puzzle_loop(
     ]
     weighings_used = 0
 
-    for _turn_idx in range(ball_set.max_weighings + 1):
+    # Allow max_weighings weighings + extra turns for invalid weighings
+    # that don't consume budget, plus 1 forced submit turn.
+    max_turns = ball_set.max_weighings * 2 + 1
+    for _turn_idx in range(max_turns):
         if weighings_used >= ball_set.max_weighings:
             # Budget exhausted: force submit_answer
             tools = [SUBMIT_ANSWER_TOOL]
@@ -470,6 +473,25 @@ def _parse_tool_call_from_text(content: str, tool_choice: object) -> dict | None
                 return {
                     "name": "weigh",
                     "arguments": json.dumps({"left": left, "right": right}),
+                }
+
+    # Pattern 5: if tool_choice forces submit_answer, try to extract ball + direction
+    # from natural language like "ball 5 is heavier" or "the odd ball is 3, lighter"
+    if expected_name == "submit_answer":
+        # Look for "ball N" pattern
+        m = re.search(r'ball\s*(?:index\s*)?(?:is\s*)?(\d+)', content, re.IGNORECASE)
+        if m:
+            ball_idx = int(m.group(1))
+            # Determine direction from text
+            direction = None
+            if re.search(r'heavier|heavy', content, re.IGNORECASE):
+                direction = "heavier"
+            elif re.search(r'lighter|light', content, re.IGNORECASE):
+                direction = "lighter"
+            if direction:
+                return {
+                    "name": "submit_answer",
+                    "arguments": json.dumps({"ball_index": ball_idx, "direction": direction}),
                 }
 
     return None
