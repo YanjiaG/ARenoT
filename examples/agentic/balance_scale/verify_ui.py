@@ -80,6 +80,11 @@ def run_puzzle_with_model(
                     tool_choice = {"type": "function", "function": {"name": "submit_answer"}}
                     hint = f"You have used all {max_weighings} weighings. Submit your best guess now."
                     turn_messages = [*messages, {"role": "user", "content": hint}]
+                elif weighings_used == 0 and turn_idx == 0:
+                    # First turn: force weigh to bootstrap tool usage
+                    tools = [ra.WEIGH_TOOL]
+                    tool_choice = {"type": "function", "function": {"name": "weigh"}}
+                    turn_messages = [*messages]
                 else:
                     tools = ra.TOOLS
                     tool_choice = "auto"
@@ -92,6 +97,7 @@ def run_puzzle_with_model(
                     messages=turn_messages,
                     tools=tools,
                     tool_choice=tool_choice,
+                    max_tokens=64,
                     stream=False,
                 )
 
