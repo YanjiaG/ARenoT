@@ -128,7 +128,8 @@ async def run_agent(ctx, batch):
 
         When the proxy does not parse tool_calls from the model's text output
         (common with untrained models on AReno's native rollout), fall back to
-        extracting tool calls from the response content text.
+        extracting tool calls from the response content text and inject them
+        into the response object so AgentTrajectoryTurn can pick them up.
         """
 
         response = await client.chat.completions.create(
@@ -157,14 +158,18 @@ async def run_agent(ctx, batch):
             parsed = _parse_tool_call_from_text(message.content, tool_choice)
             if parsed:
                 import uuid
+                parsed_call_id = f"parsed_{uuid.uuid4().hex[:8]}"
                 tool_calls = [{
-                    "id": f"parsed_{uuid.uuid4().hex[:8]}",
+                    "id": parsed_call_id,
                     "type": "function",
                     "function": {
                         "name": parsed["name"],
                         "arguments": parsed["arguments"],
                     },
                 }]
+                # Inject into the response object so AgentTrajectoryTurn
+                # __post_init__ can parse tool_calls from it.
+                _inject_tool_calls_into_response(response, parsed_call_id, parsed["name"], parsed["arguments"])
 
         return {
             "response": response,
@@ -338,6 +343,53 @@ def _tool_result_message(call: dict, result: dict) -> dict:
         "name": call["function"]["name"],
         "content": json.dumps(result, ensure_ascii=False),
     }
+
+
+def _inject_tool_calls_into_response(response: object, call_id: str, name: str, arguments: str) -> None:
+    """Inject parsed tool_calls into an OpenAI response object.
+
+    AReno's AgentTrajectoryTurn.__post_init__ calls _chat_response_message_tool_calls
+    which reads response.choices[0].message.tool_calls. When the proxy doesn't
+    populate this field, we inject our parsed tool call so the framework can
+    track it in tool_calls stats and reward records.
+    """
+
+    try:
+        choices = _response_get(response, "choices")
+        if not isinstance(choices, list) or not choices:
+            return
+        message = _response_get(choices[0], "message")
+        if message is None:
+            return
+
+        # Build a tool call object compatible with both dict and object responses
+        tool_call = {
+            "id": call_id,
+            "type": "function",
+            "function": {"name": name, "arguments": arguments},
+        }
+
+        if isinstance(message, dict):
+            message["tool_calls"] = [tool_call]
+        else:
+            # OpenAI SDK uses ChatCompletionMessage (pydantic-like object)
+            # Try setattr; if it fails, convert to dict
+            try:
+                message.tool_calls = [tool_call]
+            except (AttributeError, TypeError):
+                pass
+    except Exception:
+        # Best-effort: if injection fails, the fallback tool_calls in the
+        # return dict still work for _run_puzzle_loop logic.
+        pass
+
+
+def _response_get(obj: object, key: str):
+    """Helper: get attribute or dict key from a response-like object."""
+
+    if isinstance(obj, dict):
+        return obj.get(key)
+    return getattr(obj, key, None)
 
 
 def _parse_tool_call_from_text(content: str, tool_choice: object) -> dict | None:
