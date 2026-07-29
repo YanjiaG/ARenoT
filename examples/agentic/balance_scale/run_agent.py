@@ -30,13 +30,7 @@ import game  # noqa: E402
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-SYSTEM_PROMPT = (
-    "You are a logical reasoner solving an odd-ball balance-scale puzzle. "
-    "Use the weigh tool to compare two equal-size disjoint groups of balls. "
-    "After each weighing, reason about which balls could still be the odd one. "
-    "When you have narrowed it down, call submit_answer with the ball index "
-    "and direction (heavier or lighter). Minimise the number of weighings."
-)
+SYSTEM_PROMPT = game.format_system_prompt()
 
 WEIGH_TOOL = {
     "type": "function",
