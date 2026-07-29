@@ -14,17 +14,21 @@ no sandbox, no external dependencies beyond the Python standard library.
 - `game.py` — core engine: ball-set creation, weighing simulation, answer
   verification, and prompt formatting.
 - `dataset_generator.py` — generates reproducible JSONL puzzles with seeded
-  random odd-ball positions and weight directions.
+  random odd-ball positions and weight directions. Supports random ball
+  counts and train/test split.
 - `dataset_loader.py` — loads JSONL puzzles and converts them to Areno prompt
   records.
 - `reward.py` — reward function: information-gain-aware continuous scoring
   with repetition/invalid penalties, auto-scales to any number of balls.
 - `run_agent.py` — multi-turn agent entrypoint: loops weigh/submit_answer
-  tool calls with budget enforcement.
+  tool calls with budget enforcement. Includes text-based fallback parser
+  for AReno rollout proxy compatibility.
 - `verify_ui.py` — Gradio verification UI: configure puzzles and observe the
   model's reasoning trace and final verdict.
 
 ## Generate Puzzles
+
+### Fixed ball count
 
 ```bash
 python examples/agentic/balance_scale/dataset_generator.py \
@@ -33,6 +37,46 @@ python examples/agentic/balance_scale/dataset_generator.py \
   --seed 2026 \
   --num-balls 12
 ```
+
+### Random ball count (recommended for generalisation)
+
+```bash
+python examples/agentic/balance_scale/dataset_generator.py \
+  --output /tmp/areno-balance-scale-puzzles.jsonl \
+  --count 2048 \
+  --seed 2026 \
+  --num-balls-range 3 12
+```
+
+Each puzzle will have a random number of balls between 3 and 12, preventing
+the model from memorising a single ball count.
+
+### With train/test split
+
+```bash
+python examples/agentic/balance_scale/dataset_generator.py \
+  --output /tmp/areno-balance-scale-puzzles.jsonl \
+  --count 2048 \
+  --seed 2026 \
+  --num-balls-range 3 12 \
+  --split 0.33
+```
+
+This generates two files:
+- `puzzles.jsonl` — training set (67% of records)
+- `puzzles_test.jsonl` — test set (33% of records)
+
+### Generator options
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--output` | stdout | Output JSONL path |
+| `--count` | 128 | Number of puzzles to generate |
+| `--seed` | 2026 | Random seed for reproducibility |
+| `--num-balls` | 12 | Fixed number of balls per puzzle |
+| `--num-balls-range MIN MAX` | none | Random ball count per puzzle in [MIN, MAX] |
+| `--max-weighings` | 0 (auto) | Max weighings (0 = 2×ceil(log3(num_balls*2))) |
+| `--split RATIO` | 0 (no split) | Test set fraction (e.g. 0.33) |
 
 When `--max-weighings` is omitted (or 0), it auto-computes as 2× the
 information-theoretic minimum: `ceil(log3(num_balls * 2))`.
@@ -47,12 +91,24 @@ areno train \
   --reward-fn-path examples/agentic/balance_scale/reward.py \
   --agent-fn examples/agentic/balance_scale/run_agent.py \
   --algo gspo \
-  --batch-size 1 \
-  --n-samples 2 \
+  --batch-size 2 \
+  --n-samples 4 \
   --max-new-tokens 64 \
   --world-size 1 \
-  --tp-size 1
+  --tp-size 1 \
+  --disable-thinking \
+  --temperature 1.5
 ```
+
+### Key training tips
+
+- `--disable-thinking` is **required** for Qwen3 models — without it, the
+  model enters think mode and consumes all tokens on `...` tags.
+- `--temperature 1.5` encourages exploration across samples, producing
+  reward variance for GSPO advantage computation.
+- `--n-samples 4+` is recommended to ensure reward diversity within a group.
+- On T4 (15GB), use `--batch-size 1 --n-samples 2 --max-new-tokens 32` to
+  avoid OOM. Dual T4 or A100 allows larger configurations.
 
 ## Input Contract
 
@@ -61,7 +117,7 @@ Each JSONL record:
 | Field | Type | Description |
 | --- | --- | --- |
 | `id` | string | Unique record identifier |
-| `num_balls` | int | Number of balls (default 12) |
+| `num_balls` | int | Number of balls (varies per record when using `--num-balls-range`) |
 | `odd_ball_index` | int | Index of the odd ball (0-based) |
 | `direction` | string | `"heavier"` or `"lighter"` |
 | `max_weighings` | int | Soft upper bound on weighings (auto = 2× ceil(log3(num_balls*2))) |
@@ -106,6 +162,24 @@ R_end = K - T·alpha - P_repeat - P_invalid
 | 3 weighings, wrong | 3 | 0.0 - 0.45 = -0.45 |
 | No submit | 3 | -1.0 |
 
+## Fallback Tool Call Parser
+
+AReno's rollout proxy does not parse structured `tool_calls` from model text
+output — `message.tool_calls` is always `None` even when the model writes
+valid tool call JSON in `content`. The `run_agent.py` includes a fallback
+parser (`_parse_tool_call_from_text`) that extracts tool calls from the
+model's text using regex patterns:
+
+1. `{"name": "weigh", "arguments": {"left": [0,1], "right": [2,3]}}`
+2. `{"left": [0,1], "right": [2,3]}`
+3. `{"ball_index": 5, "direction": "heavier"}`
+4. Array extraction when `tool_choice` forces `weigh`
+5. Natural language "ball 5 is heavier" when `tool_choice` forces `submit_answer`
+
+Parsed tool calls are injected back into the response object and
+`AgentTrajectoryTurn.parsed_tool_calls` so the AReno framework can track
+them in metrics and reward records.
+
 ## Verification UI
 
 After training, launch the Gradio UI to interactively test the model:
@@ -114,7 +188,8 @@ After training, launch the Gradio UI to interactively test the model:
 python examples/agentic/balance_scale/verify_ui.py \
   --base-url http://127.0.0.1:8000/v1 \
   --api-key EMPTY \
-  --model policy
+  --model policy \
+  --agent-mode model
 ```
 
 Or without an LLM (random agent for demo):
@@ -129,13 +204,31 @@ The UI lets you:
 - Watch the model's multi-turn weighing trace
 - See the final verdict: correct/wrong, weighings used, efficiency vs optimal
 
-In Colab, the UI appears inline with `share=True`.
+In Colab/Kaggle, the UI appears inline with `share=True`.
+
+### Serve configuration for T4
+
+On T4 (15GB), serve requires `--max-running-prompts 1` to reduce KV cache
+pre-allocation:
+
+```bash
+areno serve --model-path <checkpoint> --tp-size 1 --world-size 1 \
+  --port 8000 --eager-decode --default-max-tokens 64 \
+  --max-running-prompts 1 --disable-thinking
+```
 
 ## Limitations
 
 - The weighing budget is a soft upper bound (auto = 2× theoretical minimum);
   the agent loop enforces it by forcing `submit_answer` when exhausted.
+  The loop allows up to `max_weighings * 2 + 1` turns to accommodate invalid
+  weighings that don't consume budget.
 - The reward auto-scales via `ceil(log3(num_balls * 2))`, so larger ball
   counts produce higher base rewards and proportionally higher weighing costs.
 - GPU training requires NVIDIA GPU with sufficient VRAM; T4 (15GB) can run
-  rollout + 1 training step with `--batch-size 1 --max-new-tokens 64`.
+  rollout + 1-2 training steps with `--batch-size 1 --max-new-tokens 32`.
+  Dual T4 or A100 allows multi-step training.
+- AReno's rollout proxy does not return structured `tool_calls`; the fallback
+  text parser is required for tool-call extraction (see above).
+- Qwen3 models require `--disable-thinking` to prevent think mode from
+  consuming all generation tokens.
