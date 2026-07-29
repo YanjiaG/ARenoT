@@ -191,5 +191,9 @@ def format_system_prompt() -> str:
         "Use the weigh tool to compare two equal-size disjoint groups of balls. "
         "After each weighing, reason about which balls could still be the odd one. "
         "When you have narrowed it down, call submit_answer with the ball index "
-        "and direction (heavier or lighter). Minimise the number of weighings."
+        "and direction (heavier or lighter). Minimise the number of weighings.\n\n"
+        "IMPORTANT: Do not use thinking mode. Output your tool call directly "
+        "without any /think tags. Respond ONLY with a tool call in this exact format:\n"
+        '{"left": [0, 1], "right": [2, 3]}  for weighing, or\n'
+        '{"ball_index": 5, "direction": "heavier"}  for submitting your answer.'
     )
