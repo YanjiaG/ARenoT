@@ -104,16 +104,28 @@ def run_puzzle_with_model(
                 msg = response.choices[0].message
                 tool_calls_raw = msg.tool_calls or []
 
-                if not tool_calls_raw:
-                    trace_lines.append(f"  Model returned no tool call. Content: {msg.content}")
-                    break
-
-                call = tool_calls_raw[0]
-                name = call.function.name
-                args_str = call.function.arguments or "{}"
-                args = json.loads(args_str) if args_str else {}
+                # Fallback: parse tool call from text if proxy didn't return one
+                if not tool_calls_raw and msg.content:
+                    parsed = ra._parse_tool_call_from_text(msg.content, tool_choice)
+                    if parsed:
+                        import uuid
+                        trace_lines.append(f"  (parsed from text) {parsed['name']}")
+                        name = parsed["name"]
+                        args_str = parsed["arguments"]
+                        args = json.loads(args_str) if args_str else {}
+                    else:
+                        trace_lines.append(f"  Model returned no tool call. Content: {msg.content}")
+                        break
+                else:
+                    call = tool_calls_raw[0]
+                    name = call.function.name
+                    args_str = call.function.arguments or "{}"
+                    args = json.loads(args_str) if args_str else {}
 
                 turns_log.append({"turn": turn_idx + 1, "tool": name, "args": args})
+
+                # Build a unified call_id for message construction
+                call_id = call.id if tool_calls_raw else f"parsed_{turn_idx}"
 
                 if name == "weigh":
                     left = args.get("left", [])
@@ -131,12 +143,12 @@ def run_puzzle_with_model(
                         "role": "assistant",
                         "content": msg.content,
                         "tool_calls": [{
-                            "id": call.id, "type": call.type,
+                            "id": call_id, "type": "function",
                             "function": {"name": name, "arguments": args_str},
                         }],
                     })
                     messages.append(ra._tool_result_message(
-                        {"id": call.id, "function": {"name": name, "arguments": args_str}},
+                        {"id": call_id, "function": {"name": name, "arguments": args_str}},
                         result_dict,
                     ))
 

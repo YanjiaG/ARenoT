@@ -124,7 +124,12 @@ async def run_agent(ctx, batch):
     client = AsyncOpenAI(base_url=ctx.get_base_url(), api_key=ctx.api_key, http_client=http_client, max_retries=0)
 
     async def call_model(messages, tools, tool_choice):
-        """Bridge _run_puzzle_loop to the OpenAI-compatible rollout proxy."""
+        """Bridge _run_puzzle_loop to the OpenAI-compatible rollout proxy.
+
+        When the proxy does not parse tool_calls from the model's text output
+        (common with untrained models on AReno's native rollout), fall back to
+        extracting tool calls from the response content text.
+        """
 
         response = await client.chat.completions.create(
             model="policy",
@@ -146,6 +151,21 @@ async def run_agent(ctx, batch):
             }
             for call in tool_calls_raw
         ]
+
+        # Fallback: if proxy returned no tool_calls, parse from content text
+        if not tool_calls and message.content:
+            parsed = _parse_tool_call_from_text(message.content, tool_choice)
+            if parsed:
+                import uuid
+                tool_calls = [{
+                    "id": f"parsed_{uuid.uuid4().hex[:8]}",
+                    "type": "function",
+                    "function": {
+                        "name": parsed["name"],
+                        "arguments": parsed["arguments"],
+                    },
+                }]
+
         return {
             "response": response,
             "content": message.content,
@@ -318,3 +338,78 @@ def _tool_result_message(call: dict, result: dict) -> dict:
         "name": call["function"]["name"],
         "content": json.dumps(result, ensure_ascii=False),
     }
+
+
+def _parse_tool_call_from_text(content: str, tool_choice: object) -> dict | None:
+    """Fallback parser: extract a tool call from model text output.
+
+    AReno's rollout proxy may not parse structured tool_calls from the model's
+    text. This function scans the generated text for JSON-like patterns that
+    resemble weigh or submit_answer arguments.
+
+    Returns ``{"name": str, "arguments": str(json)}`` or ``None``.
+    """
+
+    import re
+
+    # Determine expected tool name from tool_choice if forced
+    expected_name = None
+    if isinstance(tool_choice, dict):
+        fn = tool_choice.get("function", {})
+        expected_name = fn.get("name")
+
+    # Pattern 1: explicit tool call with name + arguments
+    # e.g. {"name": "weigh", "arguments": {"left": [0, 1], "right": [2, 3]}}
+    m = re.search(
+        r'"name"\s*:\s*"(weigh|submit_answer)"\s*,\s*"arguments"\s*:\s*(\{[^}]+\})',
+        content,
+    )
+    if m:
+        return {"name": m.group(1), "arguments": m.group(2)}
+
+    # Pattern 2: weigh with left/right arrays
+    # e.g. {"left": [0, 1], "right": [2, 3]}
+    # or left: [0, 1], right: [2, 3]
+    m = re.search(
+        r'"?left"?\s*:\s*\[([0-9,\s]+)\]\s*,\s*"?right"?\s*:\s*\[([0-9,\s]+)\]',
+        content,
+    )
+    if m:
+        left = [int(x.strip()) for x in m.group(1).split(",") if x.strip().isdigit()]
+        right = [int(x.strip()) for x in m.group(2).split(",") if x.strip().isdigit()]
+        if left and right:
+            return {
+                "name": "weigh",
+                "arguments": json.dumps({"left": left, "right": right}),
+            }
+
+    # Pattern 3: submit_answer with ball_index + direction
+    # e.g. {"ball_index": 5, "direction": "heavier"}
+    # or ball_index: 5, direction: "heavier"
+    m = re.search(
+        r'"?ball_index"?\s*:\s*(\d+)\s*,\s*"?direction"?\s*:\s*"(heavier|lighter)"',
+        content,
+    )
+    if m:
+        return {
+            "name": "submit_answer",
+            "arguments": json.dumps({
+                "ball_index": int(m.group(1)),
+                "direction": m.group(2),
+            }),
+        }
+
+    # Pattern 4: if tool_choice forces a specific tool, try to extract any JSON
+    if expected_name == "weigh":
+        # Look for any array-like patterns that could be left/right
+        arrays = re.findall(r'\[([0-9,\s]+)\]', content)
+        if len(arrays) >= 2:
+            left = [int(x.strip()) for x in arrays[0].split(",") if x.strip().isdigit()]
+            right = [int(x.strip()) for x in arrays[1].split(",") if x.strip().isdigit()]
+            if left and right and len(left) == len(right):
+                return {
+                    "name": "weigh",
+                    "arguments": json.dumps({"left": left, "right": right}),
+                }
+
+    return None
