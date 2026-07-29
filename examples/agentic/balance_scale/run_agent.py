@@ -155,7 +155,12 @@ async def run_agent(ctx, batch):
 
         # Fallback: if proxy returned no tool_calls, parse from content text
         if not tool_calls and message.content:
+            logger.debug("Fallback parsing tool call from content: %s", message.content[:200])
             parsed = _parse_tool_call_from_text(message.content, tool_choice)
+            if parsed:
+                logger.info("Fallback parsed tool call: %s", parsed)
+            else:
+                logger.warning("Fallback failed to parse tool call from content: %s", message.content[:200])
             if parsed:
                 import uuid
                 parsed_call_id = f"parsed_{uuid.uuid4().hex[:8]}"
