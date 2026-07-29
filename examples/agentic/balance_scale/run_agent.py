@@ -249,15 +249,20 @@ async def _run_puzzle_loop(
         response = model_output.get("response")
         content = model_output.get("content")
 
-        turns.append(
-            AgentTrajectoryTurn(
-                item=item,
-                messages=turn_messages,
-                response=response,
-                tools=tools,
-                tool_choice=tool_choice,
-            )
+        turn = AgentTrajectoryTurn(
+            item=item,
+            messages=turn_messages,
+            response=response,
+            tools=tools,
+            tool_choice=tool_choice,
         )
+
+        # If fallback parsing found tool_calls but the framework didn't
+        # (because response object is immutable), override parsed_tool_calls
+        if not turn.parsed_tool_calls and tool_calls:
+            turn.parsed_tool_calls = list(tool_calls)
+
+        turns.append(turn)
 
         if not tool_calls:
             break
