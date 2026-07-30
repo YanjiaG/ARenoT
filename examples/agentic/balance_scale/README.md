@@ -100,15 +100,60 @@ areno train \
   --temperature 1.5
 ```
 
+### Training parameters
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `--ckpt` | required | Model checkpoint (e.g. `Qwen/Qwen3-0.6B`) |
+| `--dataset-path` | required | Path to JSONL puzzles |
+| `--dataset-loader-fn` | required | Path to `dataset_loader.py` |
+| `--reward-fn-path` | required | Path to `reward.py` |
+| `--agent-fn` | required | Path to `run_agent.py` |
+| `--algo` | required | Algorithm: `gspo`, `grpo`, `ppo`, `sft`, `dpo` |
+| `--batch-size` | 2 | Prompts per rollout batch |
+| `--n-samples` | 4 | Samples per prompt (for advantage computation) |
+| `--max-new-tokens` | 64 | Max generated tokens per turn |
+| `--world-size` | 1 | Number of GPU workers |
+| `--tp-size` | 1 | Tensor parallel size |
+| `--mini-bs` | 2 | Mini-batch size for training |
+| `--score-micro-bs` | 2 | Micro-batch for reward scoring |
+| `--max-steps` | none | Max training steps (none = full dataset) |
+| `--disable-thinking` | off | **Required for Qwen3** — disables think mode |
+| `--temperature` | 1.0 | Rollout sampling temperature (1.5 recommended) |
+| `--save-path` | none | Checkpoint output directory |
+| `--save-interval` | 100 | Save checkpoint every N steps |
+
 ### Key training tips
 
 - `--disable-thinking` is **required** for Qwen3 models — without it, the
   model enters think mode and consumes all tokens on `...` tags.
 - `--temperature 1.5` encourages exploration across samples, producing
-  reward variance for GSPO advantage computation.
+  reward variance for GSPO advantage computation. Without it, samples tend
+  to produce identical outputs (reward variance = 0, no gradient signal).
 - `--n-samples 4+` is recommended to ensure reward diversity within a group.
+- `--save-interval` must be <= `--max-steps` for checkpoints to be saved.
 - On T4 (15GB), use `--batch-size 1 --n-samples 2 --max-new-tokens 32` to
   avoid OOM. Dual T4 or A100 allows larger configurations.
+
+## Multi-Turn Agent Loop
+
+The agent (`run_agent.py`) runs a multi-turn loop for each puzzle:
+
+1. **Turn 1**: Force `weigh` tool call to bootstrap tool usage.
+2. **Turns 2..N**: Allow `weigh` or `submit_answer` (tool_choice=auto).
+3. **Budget exhausted**: Force `submit_answer` with a hint message.
+4. **Termination**: Loop ends when `submit_answer` is called, model returns
+   no tool call, or max turns (`max_weighings * 2 + 1`) is reached.
+
+Each weighing result (`left_heavy` / `right_heavy` / `balanced`) is appended
+as a tool-result message so the model can reason about the next step.
+
+### Tool interaction protocol
+
+| Tool | Arguments | Returns | Notes |
+| --- | --- | --- | --- |
+| `weigh` | `{"left": [0,1], "right": [2,3]}` | `{"result": "left_heavy", "weighings_used": N}` | Groups must be equal-size and disjoint |
+| `submit_answer` | `{"ball_index": 5, "direction": "heavier"}` | `{"submitted": true, "ball_index": 5, "direction": "heavier"}` | Direction must be `"heavier"` or `"lighter"` |
 
 ## Input Contract
 
