@@ -324,6 +324,9 @@ def generate_sft_records(
     records: list[dict[str, Any]] = []
 
     for puzzle in puzzles:
+        # SFT solver requires at least 3 balls (need a reference ball for direction)
+        if puzzle["num_balls"] < 3:
+            continue
         ball_set = game.BallSet(
             num_balls=puzzle["num_balls"],
             odd_ball_index=puzzle["odd_ball_index"],

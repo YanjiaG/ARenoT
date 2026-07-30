@@ -5,13 +5,13 @@ Scoring formula:  R_end = K - T·a - P_repeat - P_invalid
   K (answer reward):
     - Full answer correct (ball + direction) → base_reward
     - Identity only correct (ball, wrong direction) → base_reward / 2
-    - Submitted but completely wrong → 0
+    - Submitted but completely wrong → -0.5 (wrong answer penalty)
     - No submit_answer call → -1 (base penalty)
 
   base_reward = ceil(log3(num_balls * 2))  — information-theoretic lower bound,
     auto-scales to any number of balls.
 
-  T (weighing cost):  each valid weighing costs `alpha` (default 0.15).
+  T (weighing cost):  each valid weighing costs `alpha` (default 0.05).
 
   P_repeat:  penalty for repeated identical weighings (same left+right sets).
 
