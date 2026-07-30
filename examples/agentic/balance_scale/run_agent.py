@@ -92,6 +92,67 @@ TOOL_BY_NAME = {tool["function"]["name"]: tool for tool in TOOLS}
 ModelCallback = Callable[[list[dict], list[dict], object], Awaitable[dict]]
 
 
+async def _call_model(client, messages, tools, tool_choice):
+    """Send a chat completion request and normalise the response.
+
+    When the proxy does not parse tool_calls from the model's text output
+    (common with untrained models on AReno's native rollout), fall back to
+    extracting tool calls from the response content text and inject them
+    into the response object so AgentTrajectoryTurn can pick them up.
+
+    Returns a dict with keys: response, content, tool_calls.
+    """
+
+    import uuid
+
+    response = await client.chat.completions.create(
+        model="policy",
+        messages=messages,
+        tools=tools,
+        tool_choice=tool_choice,
+        stream=False,
+    )
+    message = response.choices[0].message
+    tool_calls_raw = message.tool_calls or []
+    tool_calls = [
+        {
+            "id": call.id,
+            "type": call.type,
+            "function": {
+                "name": call.function.name,
+                "arguments": call.function.arguments,
+            },
+        }
+        for call in tool_calls_raw
+    ]
+
+    # Fallback: if proxy returned no tool_calls, parse from content text
+    if not tool_calls:
+        if message.content:
+            parsed = _parse_tool_call_from_text(message.content, tool_choice)
+        else:
+            parsed = None
+        if parsed:
+            parsed_call_id = f"parsed_{uuid.uuid4().hex[:8]}"
+            tool_calls = [{
+                "id": parsed_call_id,
+                "type": "function",
+                "function": {
+                    "name": parsed["name"],
+                    "arguments": parsed["arguments"],
+                },
+            }]
+            # Inject into the response object so AgentTrajectoryTurn
+            # __post_init__ can parse tool_calls from it.
+            _inject_tool_calls_into_response(response, parsed_call_id, parsed["name"], parsed["arguments"])
+
+    return {
+        "response": response,
+        "content": message.content,
+        "tool_calls": tool_calls,
+    }
+
+
 async def run_agent(ctx, batch):
     """Run multi-turn weigh/submit_answer rollouts for each puzzle."""
 
@@ -117,63 +178,6 @@ async def run_agent(ctx, batch):
     )
     client = AsyncOpenAI(base_url=ctx.get_base_url(), api_key=ctx.api_key, http_client=http_client, max_retries=0)
 
-    async def call_model(messages, tools, tool_choice):
-        """Bridge _run_puzzle_loop to the OpenAI-compatible rollout proxy.
-
-        When the proxy does not parse tool_calls from the model's text output
-        (common with untrained models on AReno's native rollout), fall back to
-        extracting tool calls from the response content text and inject them
-        into the response object so AgentTrajectoryTurn can pick them up.
-        """
-
-        response = await client.chat.completions.create(
-            model="policy",
-            messages=messages,
-            tools=tools,
-            tool_choice=tool_choice,
-            stream=False,
-        )
-        message = response.choices[0].message
-        tool_calls_raw = message.tool_calls or []
-        tool_calls = [
-            {
-                "id": call.id,
-                "type": call.type,
-                "function": {
-                    "name": call.function.name,
-                    "arguments": call.function.arguments,
-                },
-            }
-            for call in tool_calls_raw
-        ]
-
-        # Fallback: if proxy returned no tool_calls, parse from content text
-        if not tool_calls:
-            if message.content:
-                parsed = _parse_tool_call_from_text(message.content, tool_choice)
-            else:
-                parsed = None
-            if parsed:
-                import uuid
-                parsed_call_id = f"parsed_{uuid.uuid4().hex[:8]}"
-                tool_calls = [{
-                    "id": parsed_call_id,
-                    "type": "function",
-                    "function": {
-                        "name": parsed["name"],
-                        "arguments": parsed["arguments"],
-                    },
-                }]
-                # Inject into the response object so AgentTrajectoryTurn
-                # __post_init__ can parse tool_calls from it.
-                _inject_tool_calls_into_response(response, parsed_call_id, parsed["name"], parsed["arguments"])
-
-        return {
-            "response": response,
-            "content": message.content,
-            "tool_calls": tool_calls,
-        }
-
     async def run_one(item):
         record = item.record
         ball_set = game.BallSet(
@@ -182,7 +186,10 @@ async def run_agent(ctx, batch):
             direction=record["direction"],
             max_weighings=record["max_weighings"],
         )
-        turns, messages = await _run_puzzle_loop(item, ball_set, call_model)
+        turns, _messages = await _run_puzzle_loop(
+            item, ball_set,
+            lambda msgs, tls, tc: _call_model(client, msgs, tls, tc),
+        )
         return turns
 
     try:
@@ -357,6 +364,10 @@ def _inject_tool_calls_into_response(response: object, call_id: str, name: str, 
     which reads response.choices[0].message.tool_calls. When the proxy doesn't
     populate this field, we inject our parsed tool call so the framework can
     track it in tool_calls stats and reward records.
+
+    This is best-effort: if the response object is immutable (e.g. OpenAI SDK's
+    pydantic ChatCompletionMessage), injection silently fails and we fall back
+    to overriding ``turn.parsed_tool_calls`` directly in the caller.
     """
 
     try:
@@ -367,7 +378,6 @@ def _inject_tool_calls_into_response(response: object, call_id: str, name: str, 
         if message is None:
             return
 
-        # Build a tool call object compatible with both dict and object responses
         tool_call = {
             "id": call_id,
             "type": "function",
@@ -377,15 +387,17 @@ def _inject_tool_calls_into_response(response: object, call_id: str, name: str, 
         if isinstance(message, dict):
             message["tool_calls"] = [tool_call]
         else:
-            # OpenAI SDK uses ChatCompletionMessage (pydantic-like object)
-            # Try setattr; if it fails, convert to dict
+            # OpenAI SDK returns a pydantic model (ChatCompletionMessage) which
+            # may be frozen/immutable. setattr will raise AttributeError or
+            # TypeError — that's expected, the caller handles this by setting
+            # turn.parsed_tool_calls directly.
             try:
                 message.tool_calls = [tool_call]
             except (AttributeError, TypeError):
                 pass
     except Exception:
-        # Best-effort: if injection fails, the fallback tool_calls in the
-        # return dict still work for _run_puzzle_loop logic.
+        # Last-resort: if any unexpected error occurs, the fallback tool_calls
+        # in the return dict of _call_model still work for _run_puzzle_loop.
         pass
 
 
@@ -403,6 +415,13 @@ def _parse_tool_call_from_text(content: str, tool_choice: object) -> dict | None
     AReno's rollout proxy may not parse structured tool_calls from the model's
     text. This function scans the generated text for JSON-like patterns that
     resemble weigh or submit_answer arguments.
+
+    Patterns are tried in priority order:
+      1. Explicit {"name": "...", "arguments": {...}} — most precise.
+      2. Weigh args {"left": [...], "right": [...]} — common JSON shorthand.
+      3. Submit args {"ball_index": N, "direction": "..."} — common JSON shorthand.
+      4. Forced weigh: extract any two equal-length arrays (last resort).
+      5. Forced submit: parse natural language "ball N is heavier/lighter".
 
     Returns ``{"name": str, "arguments": str(json)}`` or ``None``.
     """

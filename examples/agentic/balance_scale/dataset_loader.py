@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dataset_generator  # noqa: E402
 import game  # noqa: E402
+
+logger = logging.getLogger(__name__)
 
 
 def load_training_dataset(dataset_path: str, *, default_loader=None, **_: object) -> list[dict]:
@@ -24,6 +27,11 @@ def _load_records(dataset_path: str) -> list[dict]:
     if path.is_dir():
         path = path / "balance_scale_puzzles.jsonl"
     if not path.exists():
+        logger.warning(
+            "Dataset file not found: %s. Falling back to auto-generated records. "
+            "If this is unintentional, check your --dataset-path.",
+            path,
+        )
         return dataset_generator.generate_records()
     records = []
     with path.open("r", encoding="utf-8") as handle:

@@ -56,6 +56,9 @@ def reward_fn(record: Any) -> float:
     weigh_calls = [c for c in tool_calls if c.get("name") == "weigh"]
     answer = _extract_answer(record)
 
+    # Initialise answer reward; set when answer is not None.
+    k: float | None = None
+
     # --- Analyse weighings ---
     valid_weighings = 0
     repeated_weighings = 0
@@ -128,7 +131,7 @@ def reward_fn(record: Any) -> float:
     metadata["full_answer_accuracy"] = full_acc
     metadata["identity_only_accuracy"] = identity_acc
     metadata["reward_components"] = {
-        "k": k if answer is not None else None,
+        "k": k,
         "t_cost": (valid_weighings + repeated_weighings) * ALPHA if answer is not None else 0.0,
         "repeat_cost": repeated_weighings * REPEAT_PENALTY,
         "invalid_cost": invalid_weighings * INVALID_PENALTY,
