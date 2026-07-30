@@ -35,9 +35,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import game  # noqa: E402
 
 # --- Configurable constants ---
-ALPHA = 0.15          # per-weighing cost
+ALPHA = 0.05          # per-weighing cost (low to encourage thorough weighing)
 REPEAT_PENALTY = 0.3   # penalty per repeated weighing
 INVALID_PENALTY = 0.2  # penalty per invalid weighing attempt
+WRONG_ANSWER_PENALTY = -0.5  # extra penalty for submitting a wrong answer
 NO_SUBMIT_PENALTY = -1.0
 
 
@@ -107,7 +108,7 @@ def reward_fn(record: Any) -> float:
         elif result["ball_correct"]:
             k = float(base_reward) / 2.0
         else:
-            k = 0.0
+            k = WRONG_ANSWER_PENALTY
 
         # Weighing cost: only valid + repeated count toward T
         # (invalid weighings are penalised separately)

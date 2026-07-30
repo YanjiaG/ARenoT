@@ -394,9 +394,10 @@ def test_loader_fallback_to_generator_when_file_missing():
 # Reward function (information-gain-aware continuous reward)
 # ---------------------------------------------------------------------------
 
-ALPHA = 0.15
+ALPHA = 0.05
 REPEAT_PENALTY = 0.3
 INVALID_PENALTY = 0.2
+WRONG_ANSWER_PENALTY = -0.5
 
 
 def _reward_record(source: dict, tool_calls: list, metadata: dict | None = None):
@@ -469,7 +470,7 @@ def test_reward_identity_only():
 
 
 def test_reward_completely_wrong():
-    """Wrong ball and direction → reward = 0 - alpha (only weighing cost)."""
+    """Wrong ball and direction → reward = WRONG_ANSWER_PENALTY - alpha."""
     reward = _load_module("reward")
 
     source = {"num_balls": 12, "odd_ball_index": 5, "direction": "heavier", "max_weighings": 6}
@@ -481,7 +482,7 @@ def test_reward_completely_wrong():
         ],
     )
 
-    expected = 0.0 - ALPHA
+    expected = WRONG_ANSWER_PENALTY - ALPHA
     assert reward.reward_fn(record) == expected
     assert record.metadata["full_answer_accuracy"] == 0.0
     assert record.metadata["identity_only_accuracy"] == 0.0
